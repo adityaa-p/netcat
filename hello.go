@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -37,7 +39,6 @@ func handleConnection(conn net.Conn) {
 		}
 		fmt.Print(string(buffer[:n]))
 
-		//Simulate processing the request
 		response := "Thanks for connecting!\n"
 		_, err = conn.Write([]byte(response))
 		if err != nil {
@@ -74,8 +75,34 @@ func main() {
 		}
 
 		defer conn.Close()
-
 		handleUdpConnection(conn)
+	} else if mode == "localhost" {
+		ports := os.Args[2]
+
+		if strings.Contains(ports, "-") {
+			start, _ := strconv.Atoi(strings.Split(ports, "-")[0])
+			end, _ := strconv.Atoi(strings.Split(ports, "-")[1])
+
+			for i := start; i <= end; i++ {
+				port := ":" + strconv.Itoa(i)
+				_, err := net.Dial("tcp", port)
+				if err != nil {
+					fmt.Println("Error connecting to the server. Port: ", strconv.Itoa(i))
+					continue
+				}
+
+				fmt.Println("Connection successfull")
+				break
+			}
+		} else {
+			_, err := net.Dial("tcp", ":"+ports)
+			if err != nil {
+				fmt.Println("Error connecting to the server. Port: ", ports)
+				return
+			}
+
+			fmt.Println("Connection succesfull")
+		}
 	}
 }
 
