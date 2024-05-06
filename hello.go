@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -103,6 +106,80 @@ func main() {
 
 			fmt.Println("Connection succesfull")
 		}
+	} else if mode == "-e" {
+		command := os.Args[2]
+		fmt.Println(command)
+
+		listener := startTcpServer("tcp")
+
+		defer listener.Close()
+
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				fmt.Println("Error accepting connection:", err)
+				continue
+			}
+			// go handleConnection(conn) // Launch a goroutine to handle each connection
+			buffer := make([]byte, 1024)
+			for {
+				n, err := conn.Read(buffer)
+
+				if err != nil {
+					fmt.Println("Error reading:", err)
+					break
+				}
+				fmt.Print(string(buffer[:n]))
+
+				response := "Thanks for connecting!\n"
+				_, err = conn.Write([]byte(response))
+				if err != nil {
+					fmt.Println("Error writing:", err)
+					break
+				}
+
+				// Start a shell as a subprocess
+				cmd := exec.Command(command)
+				stdin, err := cmd.StdinPipe()
+				if err != nil {
+					log.Println("Failed to get stdin:", err)
+					return
+				}
+
+				var wg sync.WaitGroup
+				wg.Add(1)
+
+				go func() {
+					// Reading messages from the WebSocket and writing to stdin
+					for {
+						// _, message, err := conn.ReadMessage()
+						if err != nil {
+							log.Println("Error reading message from WebSocket:", err)
+							break
+						}
+						_, err = stdin.Write((buffer[:n]))
+						if err != nil {
+							log.Println("Error writing to stdin:", err)
+							break
+						}
+					}
+					wg.Done()
+				}()
+
+				err = cmd.Start()
+				if err != nil {
+					log.Println("Failed to start command:", err)
+					return
+				}
+
+				// Wait for all go-routines to complete
+				wg.Wait()
+
+				// Ensure the command has finished before returning
+				_ = cmd.Wait()
+			}
+		}
+
 	}
 }
 
