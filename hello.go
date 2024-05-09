@@ -9,26 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
-
-func sendResponseToClient(conn net.Conn) {
-	defer conn.Close()
-	for {
-		fmt.Println("Waiting to send data to client")
-		time.Sleep(8 * time.Second)
-		fmt.Println(os.Args)
-
-		// args := os.Args[1]
-		// // response := "Thanks for connecting!\n"
-
-		_, err := conn.Write([]byte("Hello Aditya"))
-		if err != nil {
-			fmt.Println("Error writing:", err)
-			break
-		}
-	}
-}
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
@@ -51,177 +32,159 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
-func main() {
+func runTCPServer() {
+	listener := startTcpServer("tcp")
+	defer listener.Close()
 
-	args := os.Args
-	mode := args[1]
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+		go handleConnection(conn) // Launch a goroutine to handle each connection
+	}
+}
 
-	var listener net.Listener
-	if mode == "tcp" {
-		listener = startTcpServer(mode)
-		defer listener.Close()
+func runUDPServer() {
+	conn := startUdpServer()
+	if conn == nil {
+		fmt.Println("Error starting udp server")
+		return
+	}
 
-		for {
-			conn, err := listener.Accept()
+	defer conn.Close()
+	handleUdpConnection(conn)
+}
+
+func runLocalhostMode(ports string) {
+	if strings.Contains(ports, "-") {
+		start, _ := strconv.Atoi(strings.Split(ports, "-")[0])
+		end, _ := strconv.Atoi(strings.Split(ports, "-")[1])
+
+		for i := start; i <= end; i++ {
+			port := ":" + strconv.Itoa(i)
+			_, err := net.Dial("tcp", port)
 			if err != nil {
-				fmt.Println("Error accepting connection:", err)
+				fmt.Println("Error connecting to the server. Port: ", strconv.Itoa(i))
 				continue
 			}
-			go handleConnection(conn) // Launch a goroutine to handle each connection
-			// go sendResponseToClient(conn)
+
+			fmt.Println("Connection successfull")
+			break
 		}
-	} else if mode == "udp" {
-		conn := startUdpServer()
-		if conn == nil {
-			fmt.Println("Error starting udp server")
+	} else {
+		_, err := net.Dial("tcp", ":"+ports)
+		if err != nil {
+			fmt.Println("Error connecting to the server. Port: ", ports)
 			return
 		}
 
-		defer conn.Close()
-		handleUdpConnection(conn)
-	} else if mode == "localhost" {
-		ports := os.Args[2]
+		fmt.Println("Connection succesfull")
+	}
+}
 
-		if strings.Contains(ports, "-") {
-			start, _ := strconv.Atoi(strings.Split(ports, "-")[0])
-			end, _ := strconv.Atoi(strings.Split(ports, "-")[1])
+func runCommandMode() {
+	listener := startTcpServer("tcp")
 
-			for i := start; i <= end; i++ {
-				port := ":" + strconv.Itoa(i)
-				_, err := net.Dial("tcp", port)
+	defer listener.Close()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+
+		response := "Thanks for connecting!\n"
+		_, err = conn.Write([]byte(response))
+		if err != nil {
+			fmt.Println("Error writing:", err)
+			break
+		}
+
+		cmd := exec.Command("/bin/bash")
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			log.Println("Failed to get stdin:", err)
+			return
+		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			log.Println("Failed to get stdout:", err)
+			return
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			// Reading from stdout and sending to WebSocket
+			buf := make([]byte, 1024)
+			for {
+				n, err := stdout.Read(buf)
 				if err != nil {
-					fmt.Println("Error connecting to the server. Port: ", strconv.Itoa(i))
-					continue
+					log.Println("Error reading stdout:", err)
+					break
 				}
-
-				fmt.Println("Connection successfull")
-				break
+				fmt.Println(string(buf[:n]))
+				if err != nil {
+					log.Println("Error sending message:", err)
+					break
+				}
 			}
-		} else {
-			_, err := net.Dial("tcp", ":"+ports)
-			if err != nil {
-				fmt.Println("Error connecting to the server. Port: ", ports)
-				return
-			}
+			wg.Done()
+		}()
 
-			fmt.Println("Connection succesfull")
+		go func() {
+			// Reading messages from the WebSocket and writing to stdin
+			for {
+				buffer := make([]byte, 1024)
+				input, err := conn.Read(buffer)
+				if err != nil {
+					log.Println("Error reading message from WebSocket:", err)
+					break
+				}
+				fmt.Println(string(buffer[:input]))
+				_, err = stdin.Write(buffer[:input])
+				if err != nil {
+					log.Println("Error writing to stdin:", err)
+					break
+				}
+			}
+			wg.Done()
+		}()
+
+		err = cmd.Start()
+		if err != nil {
+			log.Println("Failed to start command:", err)
+			return
 		}
-	} else if mode == "-e" {
-		command := os.Args[2]
-		fmt.Println(command)
+		wg.Wait()
 
-		listener := startTcpServer("tcp")
+		// Ensure the command has finished before returning
+		_ = cmd.Wait()
+	}
+}
 
-		defer listener.Close()
+func main() {
+	mode := os.Args[1]
 
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				fmt.Println("Error accepting connection:", err)
-				continue
-			}
-			// go handleConnection(conn) // Launch a goroutine to handle each connection
-			//for {
+	switch mode {
+	case "tcp":
+		runTCPServer()
 
-			response := "Thanks for connecting!\n"
-			_, err = conn.Write([]byte(response))
-			if err != nil {
-				fmt.Println("Error writing:", err)
-				break
-			}
+	case "udp":
+		runUDPServer()
 
-			cmd := exec.Command("/bin/bash")
-			stdin, err := cmd.StdinPipe()
-			if err != nil {
-				log.Println("Failed to get stdin:", err)
-				return
-			}
-			stdout, err := cmd.StdoutPipe()
-			if err != nil {
-				log.Println("Failed to get stdout:", err)
-				return
-			}
-			// stderr, err := cmd.StderrPipe()
-			// if err != nil {
-			// 	log.Println("Failed to get stderr:", err)
-			// 	return
-			// }
+	case "localhost":
+		runLocalhostMode(os.Args[2])
 
-			var wg sync.WaitGroup
-			wg.Add(2)
+	case "-e":
+		runCommandMode()
 
-			go func() {
-				// Reading from stdout and sending to WebSocket
-				buf := make([]byte, 1024)
-				for {
-					n, err := stdout.Read(buf)
-					if err != nil {
-						log.Println("Error reading stdout:", err)
-						break
-					}
-					fmt.Println(string(buf[:n]))
-					// err = conn.WriteMessage(websocket.TextMessage, buf[:n])
-					if err != nil {
-						log.Println("Error sending message:", err)
-						break
-					}
-				}
-				wg.Done()
-			}()
-
-			// go func() {
-			// 	// Reading from stderr and sending to WebSocket
-			// 	buf := make([]byte, 1024)
-			// 	for {
-			// 		n, err := stderr.Read(buf)
-			// 		if err != nil {
-			// 			log.Println("Error reading stderr:", err)
-			// 			break
-			// 		}
-			// 		// err = conn.WriteMessage(websocket.TextMessage, buf[:n])
-			// 		fmt.Println(buf[:n])
-			// 		if err != nil {
-			// 			log.Println("Error sending message:", err)
-			// 			break
-			// 		}
-			// 	}
-			// 	wg.Done()
-			// }()
-
-			go func() {
-				// Reading messages from the WebSocket and writing to stdin
-				for {
-					buffer := make([]byte, 1024)
-					input, err := conn.Read(buffer)
-					//_, message, err := conn.ReadMessage()
-					if err != nil {
-						log.Println("Error reading message from WebSocket:", err)
-						break
-					}
-					fmt.Println(string(buffer[:input]))
-					_, err = stdin.Write(buffer[:input])
-					if err != nil {
-						log.Println("Error writing to stdin:", err)
-						break
-					}
-				}
-				wg.Done()
-			}()
-
-			err = cmd.Start()
-			if err != nil {
-				log.Println("Failed to start command:", err)
-				return
-			}
-
-			// Wait for all go-routines to complete
-			wg.Wait()
-
-			// Ensure the command has finished before returning
-			_ = cmd.Wait()
-			//}
-		}
-
+	default:
+		fmt.Println("Unknown mode")
 	}
 }
 
